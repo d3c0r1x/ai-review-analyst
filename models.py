@@ -10,7 +10,8 @@ SYSTEM_PROMPT = (
     "По списку отзывов выяви топ-3 проблемы товара и топ-3 преимущества. "
     "Ответь СТРОГО в формате JSON без markdown-обёртки: "
     '{"pros": ["..."], "cons": ["..."], "sentiment": "positive|neutral|negative", '
-    '"average_rating": 4.3}'
+    '"average_rating": 4.3, "distribution": {"positive": 12, "neutral": 5, '
+    '"negative": 3}, "summary": "Одно-два предложения резюме"}'
 )
 
 
@@ -23,3 +24,9 @@ class AnalysisResult(BaseModel):
     average_rating: float = Field(
         default=0.0, ge=0.0, le=5.0, description="Средняя оценка покупателей (0–5)"
     )
+    # Продвинутый уровень: распределение тональностей и короткое резюме
+    distribution: dict[str, int] = Field(
+        default_factory=dict,
+        description="Распределение тональностей: {positive, neutral, negative}",
+    )
+    summary: str = Field(default="", description="Короткое резюме анализа")

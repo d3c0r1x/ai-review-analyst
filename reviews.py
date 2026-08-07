@@ -3,21 +3,25 @@
 Порядок: по артикулу получаем карточку (card.wb.ru, чтобы узнать root-ид товара),
 затем тянем отзывы с публичного эндпоинта feedbacks1.wb.ru/feedbacks/v1/{root_id}.
 
+Продвинутый уровень:
+  - TTL-кэш по артикулу — повторный /analyze того же товара мгновенный;
+  - @async_retry на сетевые ошибки/5xx с экспоненциальным backoff;
+  - reviews_stats() — статистика по отзывам без обращения к LLM.
+
 ЧЕСТНО ОБ ИСТОЧНИКЕ (проверено при разработке, 2026-08-05):
   - Эндпоинт отзывов — недокументированный, используется open-source ботами,
     например https://github.com/nickisnotgaara/wildberries-reviews-bot.
   - Он закрыт антибот-защитой: с части IP отдаёт 403/пустоту даже с браузерным
     User-Agent (проверено напрямую). Структура ответа может меняться, поэтому
     парсер написан устойчиво (ищет отзывы по нескольким ключам).
-  - Официальный API отзывов (feedbacks-api.wildberries.ru) требует токен продавца —
-    по ТЗ мы его не используем.
   - Если запросы блокируются — включайте демо-режим: WB_DEMO_MODE=1.
 """
 from __future__ import annotations
 
 import httpx
 
-from config import DEMO_MODE, MAX_REVIEWS
+import config
+from utils import TTLCache, async_retry
 
 CARD_API_URL = "https://card.wb.ru/cards/v1/detail"
 FEEDBACKS_URL = "https://feedbacks1.wb.ru/feedbacks/v1/{root_id}"
@@ -31,6 +35,9 @@ _HEADERS = {
 }
 
 _CARD_PARAMS = {"appType": "1", "curr": "rub", "dest": "-1257786", "spp": "30"}
+
+# Кэш отзывов: articul -> список (на ANALYSIS_CACHE_TTL секунд)
+_cache = TTLCache(ttl_seconds=config.ANALYSIS_CACHE_TTL)
 
 
 async def get_root_id(articul: int) -> int | None:
@@ -46,21 +53,48 @@ async def get_root_id(articul: int) -> int | None:
     return products[0].get("root") or products[0].get("id")
 
 
-async def fetch_reviews(articul: int, limit: int = MAX_REVIEWS) -> list[dict]:
-    """Возвращает список отзывов [{text, productValuation}] — реальных или mock."""
-    if DEMO_MODE:
-        return mock_reviews(limit)
-
+@async_retry(retries=3, retry_on=(httpx.HTTPError,))
+async def _fetch_reviews_from_api(articul: int, limit: int) -> list[dict]:
     root_id = await get_root_id(articul)
     if root_id is None:
         return []
-
     async with httpx.AsyncClient(timeout=15, headers=_HEADERS) as client:
         response = await client.get(FEEDBACKS_URL.format(root_id=root_id))
         response.raise_for_status()
         data = response.json()
-
     return _extract_reviews(data, limit)
+
+
+async def fetch_reviews(articul: int, limit: int = config.MAX_REVIEWS) -> list[dict]:
+    """Возвращает список отзывов [{text, productValuation}] с TTL-кэшем."""
+    if config.DEMO_MODE:
+        return mock_reviews(limit)
+    return await _cache.get_or_set(articul, lambda: _fetch_reviews_from_api(articul, limit))
+
+
+def cache_info() -> tuple[int, float]:
+    """(число артикулов в кэше, TTL в секундах)."""
+    return _cache.size, config.ANALYSIS_CACHE_TTL
+
+
+def clear_cache() -> None:
+    _cache.invalidate()
+
+
+def reviews_stats(reviews: list[dict]) -> dict:
+    """Статистика по отзывам без обращения к LLM (для быстрого вывода)."""
+    ratings = [int(r.get("productValuation") or 0) for r in reviews]
+    n = len(ratings)
+    distribution = {
+        "positive": sum(1 for x in ratings if x >= 4),
+        "neutral": sum(1 for x in ratings if x == 3),
+        "negative": sum(1 for x in ratings if x <= 2),
+    }
+    return {
+        "total": n,
+        "average_rating": round(sum(ratings) / n, 2) if n else 0.0,
+        "distribution": distribution,
+    }
 
 
 def _extract_reviews(data: object, limit: int) -> list[dict]:
@@ -89,7 +123,7 @@ def _extract_reviews(data: object, limit: int) -> list[dict]:
     return reviews
 
 
-def mock_reviews(n: int = MAX_REVIEWS) -> list[dict]:
+def mock_reviews(n: int = config.MAX_REVIEWS) -> list[dict]:
     """Демо-режим: правдоподобные выдуманные отзывы, чтобы бот работал без сети."""
     pool = [
         ("Товар хороший, качество сборки отличное, доставка быстрая.", 5),

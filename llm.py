@@ -1,17 +1,27 @@
 """Провайдеры LLM: YandexGPT (yandex-cloud-ml-sdk), OpenAI или Mock (демо).
 
 По ТЗ используются: yandex-cloud-ml-sdk (или openai) + pydantic.
-Реальный провайдер подключается лениво (import внутри метода), поэтому бот
-работает и в демо-режиме без установленных LLM-библиотек и ключей.
+
+Продвинутый уровень:
+  - ProviderChain — цепочка провайдеров: если основной не сработал,
+    пробуем резервный (LLM_FALLBACKS), в конце — mock, бот никогда не падает;
+  - analyze_with_retry — если ответ LLM не прошёл pydantic-валидацию,
+    переспрашиваем с подсказкой «верни ТОЛЬКО валидный JSON» (до N попыток);
+  - instruction — возможность докинуть инструкцию в промпт при повторе.
 """
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from abc import ABC, abstractmethod
 
+from pydantic import ValidationError
+
+import config
 from config import (
+    LLM_FALLBACKS,
     LLM_PROVIDER,
     OPENAI_API_KEY,
     OPENAI_MODEL,
@@ -21,21 +31,30 @@ from config import (
 )
 from models import SYSTEM_PROMPT, AnalysisResult
 
+logger = logging.getLogger(__name__)
+
 
 class LLMProvider(ABC):
     """Единый интерфейс анализа отзывов."""
 
+    name: str = "base"
+
     @abstractmethod
-    async def analyze(self, reviews: list[dict]) -> AnalysisResult:
+    async def analyze(
+        self, reviews: list[dict], instruction: str | None = None
+    ) -> AnalysisResult:
         """Возвращает строго валидированный pydantic-объект."""
 
 
-def _build_user_prompt(reviews: list[dict]) -> str:
+def _build_user_prompt(reviews: list[dict], instruction: str | None = None) -> str:
     lines = [
         f"{i + 1}. (оценка {r.get('productValuation', '?')}/5) {r.get('text', '')}"
         for i, r in enumerate(reviews)
     ]
-    return "Отзывы покупателей:\n" + "\n".join(lines)
+    prompt = "Отзывы покупателей:\n" + "\n".join(lines)
+    if instruction:
+        prompt += "\n\n" + instruction
+    return prompt
 
 
 def extract_json(text: str) -> dict:
@@ -54,7 +73,11 @@ class YandexGPTProvider(LLMProvider):
     """YandexGPT через yandex-cloud-ml-sdk (документация: yandex.cloud, раздел
     Foundation Models SDK — https://yandex.cloud/ru/docs/foundation-models/sdk/)."""
 
-    async def analyze(self, reviews: list[dict]) -> AnalysisResult:
+    name = "yandex"
+
+    async def analyze(
+        self, reviews: list[dict], instruction: str | None = None
+    ) -> AnalysisResult:
         try:
             from yandex_cloud_ml_sdk import YandexMLSDK
         except ImportError as exc:
@@ -69,7 +92,7 @@ class YandexGPTProvider(LLMProvider):
             model.run,
             [
                 {"role": "system", "text": SYSTEM_PROMPT},
-                {"role": "user", "text": _build_user_prompt(reviews)},
+                {"role": "user", "text": _build_user_prompt(reviews, instruction)},
             ],
         )
         text = result.alternatives[0].text
@@ -79,7 +102,11 @@ class YandexGPTProvider(LLMProvider):
 class OpenAIProvider(LLMProvider):
     """OpenAI через официальную библиотеку openai (AsyncOpenAI)."""
 
-    async def analyze(self, reviews: list[dict]) -> AnalysisResult:
+    name = "openai"
+
+    async def analyze(
+        self, reviews: list[dict], instruction: str | None = None
+    ) -> AnalysisResult:
         try:
             from openai import AsyncOpenAI
         except ImportError as exc:
@@ -93,7 +120,7 @@ class OpenAIProvider(LLMProvider):
                 model=OPENAI_MODEL,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": _build_user_prompt(reviews)},
+                    {"role": "user", "content": _build_user_prompt(reviews, instruction)},
                 ],
                 response_format={"type": "json_object"},
                 temperature=0.2,
@@ -105,11 +132,20 @@ class OpenAIProvider(LLMProvider):
 
 
 class MockProvider(LLMProvider):
-    """Демо-режим без ключей: возвращает фиксированный результат."""
+    """Демо-режим без ключей: считает распределение по оценкам из отзывов."""
 
-    async def analyze(self, reviews: list[dict]) -> AnalysisResult:
+    name = "mock"
+
+    async def analyze(
+        self, reviews: list[dict], instruction: str | None = None
+    ) -> AnalysisResult:
         ratings = [r.get("productValuation", 0) or 0 for r in reviews]
         avg = sum(ratings) / len(ratings) if ratings else 0.0
+        distribution = {
+            "positive": sum(1 for x in ratings if x >= 4),
+            "neutral": sum(1 for x in ratings if x == 3),
+            "negative": sum(1 for x in ratings if x <= 2),
+        }
         return AnalysisResult(
             pros=[
                 "Хорошее качество сборки",
@@ -123,16 +159,94 @@ class MockProvider(LLMProvider):
             ],
             sentiment="positive" if avg >= 3.5 else "neutral",
             average_rating=round(avg, 1),
+            distribution=distribution,
+            summary=f"Средняя оценка {avg:.1f} из 5 по {len(ratings)} отзывам. "
+            f"Положительных: {distribution['positive']}, нейтральных: "
+            f"{distribution['neutral']}, отрицательных: {distribution['negative']}.",
         )
 
 
-def get_provider() -> LLMProvider:
-    """Фабрика провайдера по переменной окружения LLM_PROVIDER."""
-    provider = (LLM_PROVIDER or "mock").lower()
-    if provider == "yandex":
+class ProviderChain(LLMProvider):
+    """Пробует провайдеров по очереди; при сбое одного — следующий."""
+
+    name = "chain"
+
+    def __init__(self, providers: list[LLMProvider]) -> None:
+        self._providers = providers
+
+    async def analyze(
+        self, reviews: list[dict], instruction: str | None = None
+    ) -> AnalysisResult:
+        last_exc: Exception | None = None
+        for provider in self._providers:
+            try:
+                return await provider.analyze(reviews, instruction=instruction)
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    "Провайдер %s не сработал (%s) — пробуем следующий",
+                    provider.name, exc,
+                )
+        raise RuntimeError("Все LLM-провайдеры недоступны") from last_exc
+
+
+def _build(name: str) -> LLMProvider:
+    if name == "yandex":
         return YandexGPTProvider()
-    if provider == "openai":
+    if name == "openai":
         return OpenAIProvider()
-    if provider == "mock":
+    if name == "mock":
         return MockProvider()
-    raise ValueError(f"Неизвестный LLM_PROVIDER: {provider!r} (допустимо: mock | yandex | openai)")
+    raise ValueError(f"Неизвестный LLM-провайдер: {name!r}")
+
+
+def get_provider() -> LLMProvider:
+    """Фабрика: основной провайдер + резервные из LLM_FALLBACKS (без дублей).
+
+    Например LLM_PROVIDER=openai, LLM_FALLBACKS=mock → цепочка
+    [OpenAI, Mock]: невалидный/недоступный ключ не уронит бота.
+    """
+    names: list[str] = [(LLM_PROVIDER or "").lower(), *(n.lower() for n in LLM_FALLBACKS)]
+    providers: list[LLMProvider] = []
+    seen: set[str] = set()
+    for name in names:
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        try:
+            providers.append(_build(name))
+        except ValueError as exc:
+            logger.warning("Провайдер %r пропущен: %s", name, exc)
+    if not providers:
+        providers.append(MockProvider())
+    if len(providers) == 1:
+        return providers[0]
+    logger.info("LLM-цепочка: %s", [p.name for p in providers])
+    return ProviderChain(providers)
+
+
+async def analyze_with_retry(
+    provider: LLMProvider, reviews: list[dict], max_attempts: int = 2
+) -> AnalysisResult:
+    """Анализ с переспросом: если ответ не прошёл валидацию — пробуем ещё раз.
+
+    При повторе в промпт добавляется инструкция «верни ТОЛЬКО валидный JSON»,
+    что на практике решает 90% проблем с нестрогими ответами LLM.
+    """
+    last: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        instruction = None
+        if attempt > 1:
+            instruction = (
+                "Твой предыдущий ответ не прошёл строгую валидацию схемы. "
+                "Верни ТОЛЬКО валидный JSON без пояснений с полями pros, cons, "
+                "sentiment, average_rating (и опционально distribution, summary)."
+            )
+        try:
+            return await provider.analyze(reviews, instruction=instruction)
+        except (ValueError, json.JSONDecodeError, ValidationError) as exc:
+            last = exc
+            logger.warning(
+                "Попытка %d/%d: ответ LLM не прошёл валидацию: %s", attempt, max_attempts, exc
+            )
+    raise RuntimeError("LLM не вернул валидный JSON после всех попыток") from last

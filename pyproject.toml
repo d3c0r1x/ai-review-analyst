@@ -1,0 +1,9 @@
+[project]
+name = "ai-review-analyst"
+version = "2.0.0"
+description = "AI-анализ отзывов Wildberries: топ-3 проблемы и преимущества (LLM + pydantic)"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
