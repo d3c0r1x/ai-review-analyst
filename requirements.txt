@@ -1,0 +1,9 @@
+aiogram>=3.4,<4
+httpx>=0.27
+pydantic>=2.6
+
+# Для LLM_PROVIDER=openai:
+openai>=1.30
+
+# Для LLM_PROVIDER=yandex (тяжёлая, ставится отдельно при необходимости):
+# yandex-cloud-ml-sdk
