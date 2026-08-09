@@ -119,7 +119,17 @@ async def cmd_analyze(message: Message) -> None:
     await status.edit_text(answer)
 
     raw = json.dumps(result.model_dump(), ensure_ascii=False, indent=2)
-    await message.answer(f"<b>JSON (валидирован pydantic):</b>\n<pre>{esc(raw)}</pre>")
+    logger.debug("JSON анализа %s:\n%s", articul, raw)
+    await message.answer(
+        f"<b>JSON (валидирован pydantic):</b>\n<pre>{esc(_truncate(raw))}</pre>"
+    )
+
+
+def _truncate(text: str, limit: int = 3500) -> str:
+    """Обрезает длинный текст под лимит сообщения Telegram (4096 символов)."""
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n… [обрезано: полный JSON — в логе бота]"
 
 
 def _fmt_distribution(distribution: dict) -> str:

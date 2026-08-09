@@ -15,6 +15,24 @@ from models import AnalysisResult
 from reviews import mock_reviews, reviews_stats
 
 
+def test_extract_articul_and_truncate() -> None:
+    from bot import _extract_articul, _truncate
+
+    # артикул из числа, из ссылки и из ?nm=
+    assert _extract_articul("/analyze 17457977") == 17457977
+    assert _extract_articul(
+        "https://www.wildberries.ru/catalog/17457977/detail.aspx"
+    ) == 17457977
+    assert _extract_articul("wb.ru/?nm=12345678") == 12345678
+    assert _extract_articul("/analyze нет артикула") is None
+
+    # обрезка длинного JSON под лимит Telegram
+    assert _truncate("короткий текст") == "короткий текст"
+    cut = _truncate("x" * 5000, limit=4000)
+    assert len(cut) <= 4000 + 60
+    assert "обрезано" in cut
+
+
 def test_mock_reviews_count() -> None:
     assert len(mock_reviews(50)) == 50
 
