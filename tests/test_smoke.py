@@ -137,3 +137,48 @@ def test_reviews_cache_ttl() -> None:
         assert calls == 1
 
     asyncio.run(run())
+
+def test_yandex_provider_timeout(monkeypatch) -> None:
+    """Зависший YandexGPT не вешает бота — срабатывает LLM_TIMEOUT_SECONDS."""
+    import sys
+    import threading
+    import types
+
+    import config as cfg
+    import llm
+
+    release = threading.Event()
+
+    class FakeModel:
+        def run(self, messages):
+            release.wait(10)  # SDK «завис»: блокируется, пока тест не отпустит поток
+            return types.SimpleNamespace(alternatives=[types.SimpleNamespace(text="{}")])
+
+    class FakeMLSDK:
+        def __init__(self, folder_id, auth):
+            pass
+
+        @property
+        def models(self):
+            return types.SimpleNamespace(completions=lambda name: FakeModel())
+
+    mod = types.ModuleType("yandex_cloud_ml_sdk")
+    mod.YandexMLSDK = FakeMLSDK
+    monkeypatch.setitem(sys.modules, "yandex_cloud_ml_sdk", mod)
+    monkeypatch.setattr(llm, "YANDEX_FOLDER_ID", "folder")
+    monkeypatch.setattr(llm, "YANDEX_API_KEY", "key")
+    monkeypatch.setattr(cfg, "LLM_TIMEOUT_SECONDS", 0.05)
+
+    async def run() -> None:
+        timed_out = False
+        try:
+            await llm.YandexGPTProvider().analyze(
+                [{"text": "ок", "productValuation": 5}]
+            )
+        except Exception as exc:  # noqa: BLE001
+            timed_out = "Timeout" in type(exc).__name__
+        finally:
+            release.set()  # отпускаем зависший поток в to_thread
+        assert timed_out, "Таймаут не сработал для зависшего провайдера"
+
+    asyncio.run(run())

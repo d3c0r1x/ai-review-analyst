@@ -87,13 +87,17 @@ class YandexGPTProvider(LLMProvider):
 
         sdk = YandexMLSDK(folder_id=YANDEX_FOLDER_ID, auth=YANDEX_API_KEY)
         model = sdk.models.completions(YANDEX_MODEL)
-        # SDK синхронный — запускаем в отдельном потоке, чтобы не блокировать event loop
-        result = await asyncio.to_thread(
-            model.run,
-            [
-                {"role": "system", "text": SYSTEM_PROMPT},
-                {"role": "user", "text": _build_user_prompt(reviews, instruction)},
-            ],
+        # SDK синхронный — запускаем в отдельном потоке, чтобы не блокировать event
+        # loop, и ограничиваем время вызова таймаутом (зависший SDK не вешает бота)
+        result = await asyncio.wait_for(
+            asyncio.to_thread(
+                model.run,
+                [
+                    {"role": "system", "text": SYSTEM_PROMPT},
+                    {"role": "user", "text": _build_user_prompt(reviews, instruction)},
+                ],
+            ),
+            timeout=config.LLM_TIMEOUT_SECONDS,
         )
         text = result.alternatives[0].text
         return AnalysisResult.model_validate(extract_json(text))

@@ -29,6 +29,8 @@ MAX_REVIEWS = int(os.getenv("MAX_REVIEWS", "50"))
 LLM_FALLBACKS = [x.strip() for x in os.getenv("LLM_FALLBACKS", "mock").split(",") if x.strip()]
 # Сколько раз переспрашивать LLM, если JSON не прошёл pydantic-валидацию
 LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "2"))
+# Таймаут на вызов LLM (секунды): зависший провайдер не должен вешать бота
+LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "60"))
 # TTL кэша отзывов по артикулу (секунды)
 ANALYSIS_CACHE_TTL = float(os.getenv("ANALYSIS_CACHE_TTL", "300"))
 # Минимальный интервал между сообщениями пользователя (секунды)
