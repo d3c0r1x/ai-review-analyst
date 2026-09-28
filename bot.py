@@ -106,7 +106,9 @@ async def cmd_analyze(message: Message) -> None:
         return _html.escape(value, quote=False)
 
     answer = (
-        f"📊 <b>Анализ товара {articul}</b> (по {len(reviews)} отзывам)\n\n"
+        f"📊 <b>Анализ товара "
+        f"<a href=\"https://www.wildberries.ru/catalog/{articul}/detail.aspx\">{articul}</a></b> "
+        f"(по {len(reviews)} отзывам)\n\n"
         "👍 <b>Топ-3 преимущества:</b>\n"
         + "\n".join(f"• {esc(p)}" for p in result.pros)
         + "\n\n👎 <b>Топ-3 проблемы:</b>\n"
