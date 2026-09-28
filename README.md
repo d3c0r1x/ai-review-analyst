@@ -1,5 +1,7 @@
 # AI Review Analyst
 
+[![CI](https://github.com/d3c0r1x/ai-review-analyst/actions/workflows/ci.yml/badge.svg)](https://github.com/d3c0r1x/ai-review-analyst/actions/workflows/ci.yml)
+
 Бот для анализа отзывов на Wildberries: по артикулу формирует **топ-3 проблемы и топ-3 преимущества товара** на основе последних 50 отзывов с применением языковой модели.
 
 Реализация соответствует ТЗ: aiogram + httpx + LLM (YandexGPT или OpenAI) + pydantic для строгой валидации JSON.
