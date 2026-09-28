@@ -1,71 +1,19 @@
 # AI Review Analyst
 
-[![CI](https://github.com/d3c0r1x/ai-review-analyst/actions/workflows/ci.yml/badge.svg)](https://github.com/d3c0r1x/ai-review-analyst/actions/workflows/ci.yml)
+> **Prototype / extracted component.** This idea was later incorporated into the larger [Smart Shopper](https://github.com/d3c0r1x/smart-shopper) project.
 
-Бот для анализа отзывов на Wildberries: по артикулу формирует **топ-3 проблемы и топ-3 преимущества товара** на основе последних 50 отзывов с применением языковой модели.
+LLM-powered analysis of marketplace reviews. Given a Wildberries product, the service extracts recurring problems and advantages from a review set and returns a validated structured result.
 
-Реализация соответствует ТЗ: aiogram + httpx + LLM (YandexGPT или OpenAI) + pydantic для строгой валидации JSON.
+## What it demonstrates
 
-## 🕹 Живое демо
+- LLM integration through HTTP API;
+- structured JSON output validated with Pydantic;
+- retry/fallback when the model returns invalid data;
+- simple Telegram interface;
+- deterministic tests without requiring a live model.
 
-Онлайн-демо не опубликовано: поллинг Telegram требует постоянно работающего процесса. Локальный запуск — `start.bat` (см. раздел «Запуск»); витрина всех проектов — [d3c0r1x.github.io](https://d3c0r1x.github.io).
+## Stack
 
-## Команды
+Python · aiogram · httpx · Pydantic · LLM API · pytest · GitHub Actions
 
-- `/analyze 12345678` — анализ по артикулу (или `/analyze https://www.wildberries.ru/catalog/...`)
-- `/model` — активная цепочка LLM-провайдеров
-- `/cache` — количество отзывов в кэше
-
-## Принцип работы
-
-1. Загрузка последних `MAX_REVIEWS` (50) отзывов с публичного API WB;
-2. Передача их языковой модели с промптом «выдели топ-3 проблемы и топ-3 преимущества»;
-3. Модель должна вернуть **строгий JSON** (поля `pros`, `cons`, ...);
-4. JSON валидируется через pydantic — при несоответствии схеме бот не завершается с ошибкой, а **повторно запрашивает** модель с указанием конкретной ошибки (`LLM_MAX_RETRIES=2`);
-5. Результат выводится структурированным сообщением; отзывы кэшируются на 5 минут для снижения нагрузки на API.
-
-## Цепочка провайдеров
-
-Модель не обязана быть одна. В `config.py` задаётся основной провайдер и резервные (`LLM_FALLBACKS`). При исчерпании лимита YandexGPT или невалидном ключе бот автоматически переключается на следующего провайдера. Для разработки предусмотрен `LLM_PROVIDER=mock`: модель имитируется локально без ключей, что позволяет запускать тесты в любом окружении.
-
-## Запуск
-
-```bash
-python -m venv .venv
-pip install -r requirements.txt
-export WB_BOT_TOKEN=123456:ABC...   # токен от @BotFather
-export LLM_PROVIDER=mock            # mock | yandex | openai
-export WB_DEMO_MODE=1               # 1 — синтетические отзывы, сеть не требуется
-python bot.py
-```
-
-Для YandexGPT требуются `YANDEX_FOLDER_ID` + `YANDEX_API_KEY`, для OpenAI — `OPENAI_API_KEY`. На Windows — `start.bat` (токен из корневого `.env`).
-
-## Структура проекта
-
-```
-bot.py          — команды и обработка
-llm.py          — цепочка провайдеров, вызов LLM, retry при невалидном JSON
-reviews.py      — парсинг отзывов WB, TTL-кэш, retry на сетевые ошибки
-models.py       — pydantic-модели: ответ LLM, распределение тональностей
-db.py           — SQLite: история анализов
-middlewares.py  — троттлинг и логирование
-config.py       — настройки из переменных окружения
-tests/          — 9 тестов (валидация JSON, цепочка фолбэков, распределение, артикул/обрезка, таймаут LLM)
-```
-
-## Технические особенности
-
-- **Языковые модели не всегда возвращают валидный JSON.** Получены ответы вида «Вот анализ: ...» вместо чистого JSON. Решение — повторный запрос с указанием ошибки pydantic; после N попыток возвращается понятное сообщение об ошибке вместо аварийного завершения.
-- **Публичное API WB для отзывов** (`feedbacks1.wb.ru`) также защищено антиботом (см. примечания в корневом README) — поэтому предусмотрен `WB_DEMO_MODE`.
-- **Валидация на выходе важнее валидации на входе** — pydantic используется не для пользовательского ввода, а как контроль корректности данных модели.
-
-## Планы развития
-
-- суммаризация в один абзац «стоит ли покупать»;
-- отслеживание динамики: сравнение с предыдущим анализом того же товара;
-- рейтинг тональностей с эмодзи в сообщении.
-
-## Тесты
-
-`pytest tests/ -q` — 9 тестов. GitHub Actions прогоняет их при каждом push.
+The project is kept public as an example of the smaller prototype that later became a feature inside Smart Shopper.
